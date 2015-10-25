@@ -1,44 +1,44 @@
 
 package com.github.andreptb.fitnessemavenrunner;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.ServerSocket;
-import java.net.URL;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Map.Entry;
+import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.lang3.ClassUtils;
+import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.Range;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.SystemUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.commons.lang3.math.NumberUtils;
-import org.apache.commons.lang3.mutable.MutableObject;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.maven.artifact.Artifact;
+import org.apache.maven.artifact.versioning.ArtifactVersion;
+import org.apache.maven.artifact.versioning.OverConstrainedVersionException;
 import org.apache.maven.execution.MavenSession;
-import org.apache.maven.model.Build;
-import org.apache.maven.model.Plugin;
 import org.apache.maven.plugin.AbstractMojo;
-import org.apache.maven.plugin.BuildPluginManager;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugin.descriptor.PluginDescriptor;
-import org.apache.maven.plugins.annotations.Component;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
-import org.twdata.maven.mojoexecutor.MojoExecutor;
-import org.twdata.maven.mojoexecutor.MojoExecutor.Element;
-import org.twdata.maven.mojoexecutor.MojoExecutor.ExecutionEnvironment;
+
+import fitnesse.ConfigurationParameter;
+import fitnesse.ContextConfigurator;
 
 /**
  * Plugin allow configuration to run FitNesse, resembling
@@ -62,14 +62,17 @@ public class FitnesseRunnerMojo extends AbstractMojo {
 	/**
 	 * Reference to the current maven session
 	 */
-	@Parameter(defaultValue = "${session}", readonly = true)
-	private MavenSession mavenSession;
+	@Parameter(defaultValue = "${plugin}", readonly = true)
+	private PluginDescriptor plugin;
+
+	@Parameter(defaultValue = "${plugin.artifacts}", readonly = true)
+	private Collection<Artifact> pluginClasspath;
 
 	/**
-	 * The Maven BuildPluginManager component.
+	 * Reference to the current maven session
 	 */
-	@Component
-	private BuildPluginManager pluginManager;
+	@Parameter(defaultValue = "${session}", readonly = true)
+	private MavenSession mavenSession;
 
 	/**
 	 * FitNesse port to start in WEB mode. Defaults to 8000
@@ -89,24 +92,17 @@ public class FitnesseRunnerMojo extends AbstractMojo {
 	@Parameter(property = "fitnesse.fitNesseRoot", defaultValue = "FitNesseRoot")
 	private String fitNesseRoot;
 
-	/**
-	 * Load an alternative configuration file. The file format adhere's to the java standard of property files. If this option is not provided, the default file plugins.properties will be loaded if it
-	 * exists.
-	 */
-	@Parameter(property = "fitnesse.configFile")
-	private String configFile;
+	@Parameter(property = "fitnesse.contextRoot")
+	private String contextRoot;
+
+	@Parameter(defaultValue = "com.github.andreptb.fitnessemavenrunner.FitNesseLauncher")
+	private String fitNesseLauncherClass;
 
 	/**
 	 * Creates a variable to be used by fitnesse containing the classpath available along the run command.
 	 */
-	@Parameter(property = "fitnesse.classpath.variable", defaultValue = "fitnesse.classpath")
+	@Parameter(property = "fitnesse.classpath.variable", defaultValue = "FITNESSE_CLASSPATH")
 	private String fitnesseClasspathVariable;
-
-	/**
-	 * Indicates if the project dependencies should be used when executing the main class.
-	 */
-	@Parameter(property = "fitnesse.includeProjectDependencies", defaultValue = "false")
-	private boolean includeProjectDependencies;
 
 	/**
 	 * If informed, will run the command and then exit, useful to run tests and then exit. For example: <b>mvn fitnesserunner:run -Dfitnesse.command=SuiteToRun?suite&format=text</b>
@@ -124,118 +120,105 @@ public class FitnesseRunnerMojo extends AbstractMojo {
 	private String redirectOutput;
 
 	/**
-	 * Creates a configuration of maven-exec-plugin to run FitNesse based on this plugin configuration.
+	 * Indicates if the project dependencies should be used when executing the main class.
 	 */
+	@Parameter(property = "fitnesse.includeProjectDependencies", defaultValue = "false")
+	private boolean includeProjectDependencies;
+
 	@Override
 	public void execute() throws MojoExecutionException, MojoFailureException {
-		Plugin plugin = MojoExecutor.plugin("org.codehaus.mojo", "exec-maven-plugin", "1.4.0");
-		Collection<Element> configuration = new ArrayList<>();
-		MojoExecutor.element("includeProjectDependencies", Boolean.FALSE.toString());
-		configuration.add(MojoExecutor.element("mainClass", "fitnesseMain.FitNesseMain"));
-		configuration.add(MojoExecutor.element("commandlineArgs", buildCommandLineArgs()));
-		String classpathString = addClasspathConfigurationElement(configuration);
-		addSystemPropertiesConfigurationElement(configuration, classpathString);
-		ExecutionEnvironment executionEnviroment = MojoExecutor.executionEnvironment(this.project, this.mavenSession, this.pluginManager);
-		MojoExecutor.executeMojo(plugin, "java", MojoExecutor.configuration(configuration.toArray(new Element[configuration.size()])), executionEnviroment);
+		Collection<String> classpath = determineClasspath();
+		execute(configuration(classpath), classpath);
 	}
 
-	private void addSystemPropertiesConfigurationElement(Collection<Element> configuration, String classpathString) {
-		Collection<Element> envs = new ArrayList<>();
-		envs.add(property(this.fitnesseClasspathVariable, classpathString));
-		Map<Object, Object> properties = new HashMap<>();
-		properties.putAll(this.project.getProperties());
-		properties.putAll(this.mavenSession.getUserProperties());
-		for (Entry<Object, Object> entry : properties.entrySet()) {
-			envs.add(property(entry.getKey(), entry.getValue()));
-			getLog().debug("Adding system property to Fitnesse: " + entry);
-		}
-		configuration.add(MojoExecutor.element("systemProperties", envs.toArray(new Element[envs.size()])));
+	private ContextConfigurator configuration(Collection<String> classpath) {
+		ContextConfigurator config = ContextConfigurator.systemDefaults();
+		withParameter(config, ConfigurationParameter.ROOT_PATH, determineRootPath());
+		withParameter(config, ConfigurationParameter.ROOT_DIRECTORY, this.fitNesseRoot);
+		withParameter(config, ConfigurationParameter.CONTEXT_ROOT, this.contextRoot);
+		withParameter(config, ConfigurationParameter.COMMAND, this.command);
+		withParameter(config, ConfigurationParameter.OUTPUT, this.redirectOutput);
+		withParameter(config, ConfigurationParameter.PORT, determinePort());
+		withParameter(config, this.fitnesseClasspathVariable, StringUtils.join(classpath, SystemUtils.PATH_SEPARATOR));
+		// TODO: still not compatible with fitnesse updates nor install only
+		withParameter(config, ConfigurationParameter.OMITTING_UPDATES, true);
+		return config;
 	}
 
-	private String addClasspathConfigurationElement(Collection<Element> config) throws MojoExecutionException {
-		Collection<Element> classpath = new ArrayList<>();
-		Collection<URL> classpathSources = new ArrayList<>();
-		Collection<String> classpathElements = new HashSet<>();
-		CollectionUtils.addAll(classpathSources, ((PluginDescriptor) getPluginContext().get("pluginDescriptor")).getClassRealm().getURLs());
-		for (URL classpathEntry : ((PluginDescriptor) getPluginContext().get("pluginDescriptor")).getClassRealm().getURLs()) {
-			classpathElements.add(classpathEntry.getFile());
+	private void withParameter(ContextConfigurator config, Object key, Object value) {
+		String valueString = Objects.toString(value, null);
+		if (StringUtils.isBlank(valueString)) {
+			return;
 		}
-		if (this.includeProjectDependencies) {
-			Build build = this.project.getBuild();
-			classpathElements.add(build.getOutputDirectory());
-			classpathElements.add(build.getTestOutputDirectory());
-			for (Artifact artifact : this.project.getArtifacts()) {
-				classpathElements.add(artifact.getFile().getAbsolutePath());
-			}
+		if (key instanceof ConfigurationParameter) {
+			config.withParameter((ConfigurationParameter) key, valueString);
+		} else {
+			config.withParameter(Objects.toString(key), valueString);
 		}
-		for (URL artifactUrl : classpathSources) {
-			String file = artifactUrl.getFile();
-			classpath.add(MojoExecutor.element("additionalClasspathElement", file));
-			classpathElements.add(file);
-		}
-		config.add(MojoExecutor.element("additionalClasspathElements", classpath.toArray(new Element[classpath.size()])));
-		return StringUtils.join(classpathElements, ":");
+		getLog().debug(String.format("%s: %s", key, valueString));
 	}
 
-	private Element property(Object key, Object value) {
-		return MojoExecutor.element("property", MojoExecutor.element("key", key.toString()), MojoExecutor.element("value", value.toString()));
-	}
-
-	private String buildCommandLineArgs() throws MojoExecutionException {
-		Collection<String> cmd = new ArrayList<>();
-		cmd.add("-r " + this.fitNesseRoot);
-		try {
-			String rootDir = determineRootDir();
-			if (StringUtils.isNotBlank(rootDir)) {
-				cmd.add("-d " + rootDir);
-			}
-		} catch (IOException e) {
-			throw new MojoExecutionException("Unexpected IO error determining fitnesse root dir", e);
-		}
-		if (StringUtils.isNotBlank(this.command)) {
-			cmd.add("-c " + this.command);
-		}
-		if (StringUtils.isNotBlank(this.redirectOutput)) {
-			cmd.add("-b " + Paths.get(this.redirectOutput).normalize().toString());
-		}
-		cmd.add("-p " + determinePort());
-		return StringUtils.join(cmd, StringUtils.SPACE);
-	}
-
-	private String determineRootDir() throws IOException {
+	private String determineRootPath() {
 		if (StringUtils.isNotBlank(this.rootPath)) {
 			return Paths.get(this.rootPath).normalize().toString();
 		}
-		final MutableObject<String> fitnesseRootDir = new MutableObject<>(StringUtils.EMPTY);
-		Files.walkFileTree(this.project.getBasedir().toPath(), new SimpleFileVisitor<Path>() {
-			@Override
-			public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-				if (dir.endsWith(FitnesseRunnerMojo.this.fitNesseRoot)) {
-					fitnesseRootDir.setValue(dir.toString());
-					return FileVisitResult.TERMINATE;
-				}
-				return super.preVisitDirectory(dir, attrs);
-			}
-		});
-		return fitnesseRootDir.getValue();
-	}
-
-	private int determinePort() throws MojoExecutionException {
-		if (this.port != null) {
-			return this.port;
+		Path basedir = this.project.getBasedir().toPath();
+		try {
+			Stream<Path> fitNesseRootSearcher = Files.walk(basedir).filter(t -> t.toFile().isDirectory() && t.endsWith(FitnesseRunnerMojo.this.fitNesseRoot));
+			return fitNesseRootSearcher.findFirst().get().getParent().toString();
+		} catch (NoSuchElementException | IOException e) {
+			getLog().debug("Failed to find a valid FitNesseRoot directory under: " + basedir, e);
 		}
-		return getAvailablePort(FitnesseRunnerMojo.PORT_RANGE.getMinimum());
+		return null;
 	}
 
-	private int getAvailablePort(Integer port) throws MojoExecutionException {
+	private int determinePort() {
+		return ObjectUtils.defaultIfNull(this.port, determinePort(FitnesseRunnerMojo.PORT_RANGE.getMinimum()));
+	}
+
+	private int determinePort(Integer port) {
 		if (!FitnesseRunnerMojo.PORT_RANGE.contains(port)) {
-			throw new MojoExecutionException("Unable to find an available port within the range tried: " + FitnesseRunnerMojo.PORT_RANGE);
+			throw new IllegalStateException("Unable to find an available port to run FitNesse within the range: " + FitnesseRunnerMojo.PORT_RANGE);
 		}
 		try (ServerSocket socket = new ServerSocket(port)) {
 			return port;
 		} catch (IOException e) {
-			return getAvailablePort(port + NumberUtils.INTEGER_ONE);
+			return determinePort(port + NumberUtils.INTEGER_ONE);
 		}
 	}
 
+	private Collection<String> determineClasspath() {
+		Map<String, Pair<ArtifactVersion, String>> classpathMap = new HashMap<>();
+		collectFileFromArtifacts(classpathMap, this.pluginClasspath);
+		Collection<String> classpath = new ArrayList<>();
+		if (this.includeProjectDependencies) {
+			collectFileFromArtifacts(classpathMap, this.project.getArtifacts());
+			classpath.add(this.project.getBuild().getOutputDirectory() + File.separator);
+			classpath.add(this.project.getBuild().getTestOutputDirectory() + File.separator);
+		}
+		classpath.addAll(classpathMap.values().stream().map(versionAndFile -> versionAndFile.getValue()).collect(Collectors.toList()));
+		return classpath;
+	}
+
+	private void collectFileFromArtifacts(Map<String, Pair<ArtifactVersion, String>> artifactMap, Collection<Artifact> artifacts) {
+		artifacts.stream().forEach(artifact -> {
+			String artifactKey = String.format("%s%s", artifact.getGroupId(), artifact.getArtifactId());
+			Pair<ArtifactVersion, String> entry = artifactMap.get(artifactKey);
+			try {
+				if (entry == null || entry.getKey().compareTo(artifact.getSelectedVersion()) < NumberUtils.INTEGER_ZERO) {
+					artifactMap.put(artifactKey, Pair.of(artifact.getSelectedVersion(), artifact.getFile().getAbsolutePath()));
+				}
+			} catch (OverConstrainedVersionException e) {
+				getLog().warn("Failed to compare artifact versions: " + artifact, e);
+			}
+		});
+	}
+
+	private void execute(ContextConfigurator config, Collection<String> classpath) throws MojoExecutionException {
+		try {
+			((FitNesseLauncher) ClassUtils.getClass(this.fitNesseLauncherClass).newInstance()).launch(config, classpath);
+		} catch (Exception e) {
+			throw new MojoExecutionException(e.getMessage(), ExceptionUtils.getRootCause(e));
+		}
+	}
 }

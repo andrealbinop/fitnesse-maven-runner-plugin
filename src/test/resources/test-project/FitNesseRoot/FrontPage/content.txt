@@ -1,0 +1,7 @@
+!define TEST_SYSTEM {slim}
+
+!***> classpath config
+!path ${FITNESSE_CLASSPATH}
+***!
+
+!contents -R2 -g -p -f -h
