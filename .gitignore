@@ -8,14 +8,5 @@ bin
 *.sw
 rebel.xml
 target
-dependency-reduced-pom.xml
-fitnesse/FitNesseRoot/files
-fitnesse/FitNesseRoot/**/*.zip
-fitnesse/FitNesseRoot/ErrorLogs/
-fitnesse/FitNesseRoot/RecentChanges/
-fitnesse/FitNesseRoot/properties
-fitnesse/FitNesseRoot/updateDoNotCopyOverList
-fitnesse/FitNesseRoot/updateList
 *.log
 src/deploy/private.key
-src/deploy/.creds

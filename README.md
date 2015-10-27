@@ -14,7 +14,7 @@ fitnesse-maven-runner-plugin
 		<plugin>
 			<groupId>com.github.andreptb</groupId>
 			<artifactId>fitnesse-maven-runner-plugin</artifactId>
-			<version>0.1.0</version>
+			<version>0.2.0</version>
 		</plugin>
 	</plugins>
 </build>

@@ -1,0 +1,17 @@
+language: java
+jdk:
+- oraclejdk8
+env:
+  global:
+  - M2_REPO: "~/.m2"
+  - PARENT_POM_VERSION: 0.5.0
+  - secure: yIby4YPKXYB5Pe1COYshFZ5Tl3QjulxWdY/526aSieSPLoTc/IkIedYX11RYwZyFPje04kDbXMOIRKhKBbgvzmWdNOwpCtRPUlo4D5OwxWUbxbnzy4ZyU8ouC7n8srwRTopXwHBQvZcrUyq5AHm+ZmsMRK/TDr+1gHm+ea6qlZn34u4tb9cZfA21OTfAV7Cu+ao6uGrmRGizFSqjvQrYfHB7KmhzQq8bcFRFhztbm9uCfmFtk0+jmPseVLjsDt9VOxD1v3iCxW+yfJX82elAnZygx0OGFvKLTpzG45r9eLuK42Mnzu27+A5Lf5H4AEp64gATZXoU3WOh9aZgzcydBorVY21sEnC7CZiDD4GduBvHJwm11zXgLboa1cNtH6Afg2jAhRGNdOXh2H6MnBfx6D4dMPGK3p9CuQp7oB0isJ1kNLJBgh+M62noqqxA8hlvtymIAL+4P3yh30IhB6SD6ZQPG6NCF/Jb8wsre+PZ7wkaXDoAJdk6Sryj0fXx+oEWrz/pcdMw4kMk6t7oleNWsNhGNmyx2P4ul3+7sIPJERkgu+dluYaLy0wbdL5zPVN/6mJ3795jIJiSghw0GYTGfb09VA4pZdaabWEDfx0r1QfmUhSeRkEymDhp0MmU5oqqM8sZvp/30nBhtjdEDK0mXlAyebakOw0UhJBhX2eDIJg=
+before_install:
+- openssl aes-256-cbc -K $encrypted_7815c6b0f09a_key -iv $encrypted_7815c6b0f09a_iv -in src/deploy/private.key.enc -out src/deploy/private.key -d
+- gpg --import src/deploy/private.key && gpg --import src/deploy/public.key
+- mvn dependency:get -Dartifact=com.github.andreptb:andreptb-component-parent:$PARENT_POM_VERSION:xml:mvn-settings
+- cp $M2_REPO/repository/com/github/andreptb/andreptb-component-parent/$PARENT_POM_VERSION/andreptb-component-parent-$PARENT_POM_VERSION-mvn-settings.xml $M2_REPO/settings.xml
+install:
+- mvn dependency:resolve dependency:resolve-plugins
+script:
+- mvn deploy site-deploy

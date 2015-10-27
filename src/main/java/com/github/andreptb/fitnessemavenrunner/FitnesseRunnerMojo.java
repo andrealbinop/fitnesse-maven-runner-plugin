@@ -4,19 +4,22 @@ package com.github.andreptb.fitnessemavenrunner;
 import java.io.File;
 import java.io.IOException;
 import java.net.ServerSocket;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.apache.commons.lang3.ClassUtils;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.Range;
 import org.apache.commons.lang3.StringUtils;
@@ -39,6 +42,7 @@ import org.apache.maven.project.MavenProject;
 
 import fitnesse.ConfigurationParameter;
 import fitnesse.ContextConfigurator;
+import fitnesseMain.FitNesseMain;
 
 /**
  * Plugin allow configuration to run FitNesse, resembling
@@ -92,11 +96,11 @@ public class FitnesseRunnerMojo extends AbstractMojo {
 	@Parameter(property = "fitnesse.fitNesseRoot", defaultValue = "FitNesseRoot")
 	private String fitNesseRoot;
 
+	/**
+	 * Allows setting a custom contextRoot to the application: http://[host][contextRoot]
+	 */
 	@Parameter(property = "fitnesse.contextRoot")
 	private String contextRoot;
-
-	@Parameter(defaultValue = "com.github.andreptb.fitnessemavenrunner.FitNesseLauncher")
-	private String fitNesseLauncherClass;
 
 	/**
 	 * Creates a variable to be used by fitnesse containing the classpath available along the run command.
@@ -125,6 +129,12 @@ public class FitnesseRunnerMojo extends AbstractMojo {
 	@Parameter(property = "fitnesse.includeProjectDependencies", defaultValue = "false")
 	private boolean includeProjectDependencies;
 
+	/**
+	 * Allows setting a custom theme
+	 */
+	@Parameter(property = "fitnesse.theme")
+	private String theme;
+
 	@Override
 	public void execute() throws MojoExecutionException, MojoFailureException {
 		Collection<String> classpath = determineClasspath();
@@ -140,9 +150,17 @@ public class FitnesseRunnerMojo extends AbstractMojo {
 		withParameter(config, ConfigurationParameter.OUTPUT, this.redirectOutput);
 		withParameter(config, ConfigurationParameter.PORT, determinePort());
 		withParameter(config, this.fitnesseClasspathVariable, StringUtils.join(classpath, SystemUtils.PATH_SEPARATOR));
+		withParameter(config, "Theme", this.theme);
+		exposeMavenProperties(config);
 		// TODO: still not compatible with fitnesse updates nor install only
 		withParameter(config, ConfigurationParameter.OMITTING_UPDATES, true);
 		return config;
+	}
+
+	private void exposeMavenProperties(ContextConfigurator config) {
+		BiConsumer<? super Object, ? super Object> propertyCollector = (key, value) -> withParameter(config, key, value);
+		this.mavenSession.getCurrentProject().getProperties().forEach(propertyCollector);
+		this.mavenSession.getUserProperties().forEach((key, value) -> withParameter(config, key, value));
 	}
 
 	private void withParameter(ContextConfigurator config, Object key, Object value) {
@@ -215,10 +233,26 @@ public class FitnesseRunnerMojo extends AbstractMojo {
 	}
 
 	private void execute(ContextConfigurator config, Collection<String> classpath) throws MojoExecutionException {
+		Integer result = null;
 		try {
-			((FitNesseLauncher) ClassUtils.getClass(this.fitNesseLauncherClass).newInstance()).launch(config, classpath);
+			Collection<Thread> previousThreadsSnapshot = new HashSet<>(Thread.getAllStackTraces().keySet());
+			URL[] classpathUrl = new URL[classpath.size()];
+			int i = 0;
+			for (String entry : classpath) {
+				classpathUrl[i++] = new File(entry).toURI().toURL();
+			}
+			Thread.currentThread().setContextClassLoader(new URLClassLoader(classpathUrl, getClass().getClassLoader()));
+			result = new FitNesseMain().launchFitNesse(config);
+			// no result means web execution mode
+			if (result == null) {
+				Thread.getAllStackTraces().keySet().stream().filter(thread -> !previousThreadsSnapshot.contains(thread)).findFirst().get().join();
+				return;
+			}
 		} catch (Exception e) {
 			throw new MojoExecutionException(e.getMessage(), ExceptionUtils.getRootCause(e));
+		}
+		if (result > NumberUtils.INTEGER_ZERO) {
+			throw new MojoExecutionException(result + " FitNesse tests failed to execute");
 		}
 	}
 }

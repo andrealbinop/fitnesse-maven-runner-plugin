@@ -1,3 +1,4 @@
+
 package com.github.andreptb.fitnessemavenrunner;
 
 import java.io.File;
@@ -23,8 +24,7 @@ public class FitnesseRunnerMojoTest {
 
 	@Test
 	public void testRunSuiteWithDefaultConfig() throws Exception {
-		this.mojo.put("command", "FrontPage?getPage");
-		//this.mojo.put("redirectOutput", testResult.getAbsolutePath());
+		this.mojo.put("command", "FrontPage?suite&format=text");
 		this.mojo.execute("/test-project", "run");
 	}
 
