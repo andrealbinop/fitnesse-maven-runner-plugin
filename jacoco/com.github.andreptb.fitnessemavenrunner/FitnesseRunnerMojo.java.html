@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="en"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../.resources/report.css" type="text/css"/><link rel="shortcut icon" href="../.resources/report.gif" type="image/gif"/><title>FitnesseRunnerMojo.java</title><link rel="stylesheet" href="../.resources/prettify.css" type="text/css"/><script type="text/javascript" src="../.resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../.sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">fitnesse-maven-runner-plugin</a> &gt; <a href="index.source.html" class="el_package">com.github.andreptb.fitnessemavenrunner</a> &gt; <span class="el_source">FitnesseRunnerMojo.java</span></div><h1>FitnesseRunnerMojo.java</h1><pre class="source lang-java linenums">
+package com.github.andreptb.fitnessemavenrunner;
+
+import java.io.File;
+import java.io.IOException;
+import java.net.ServerSocket;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.apache.commons.lang3.ObjectUtils;
+import org.apache.commons.lang3.Range;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.SystemUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.apache.commons.lang3.math.NumberUtils;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.maven.artifact.Artifact;
+import org.apache.maven.artifact.versioning.ArtifactVersion;
+import org.apache.maven.artifact.versioning.OverConstrainedVersionException;
+import org.apache.maven.execution.MavenSession;
+import org.apache.maven.plugin.AbstractMojo;
+import org.apache.maven.plugin.MojoExecutionException;
+import org.apache.maven.plugin.MojoFailureException;
+import org.apache.maven.plugin.descriptor.PluginDescriptor;
+import org.apache.maven.plugins.annotations.Mojo;
+import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.plugins.annotations.ResolutionScope;
+import org.apache.maven.project.MavenProject;
+
+import fitnesse.ConfigurationParameter;
+import fitnesse.ContextConfigurator;
+import fitnesseMain.FitNesseMain;
+
+/**
+ * Plugin allow configuration to run FitNesse, resembling
+ * &lt;a href=&quot;http://www.fitnesse.org/FitNesse.FullReferenceGuide.UserGuide.AdministeringFitNesse.CommandLineArguments&quot;&gt;regular FitNesse command line&lt;/a&gt;
+ * but providing extra features such as classpath configuration and so on.
+ */
+@Mojo(name = &quot;run&quot;, requiresDependencyResolution = ResolutionScope.TEST)
+<span class="fc" id="L53">public class FitnesseRunnerMojo extends AbstractMojo {</span>
+
+	/**
+	 * If no port configuration is supplied, the first obtained port will be used, starting from the constant value below
+	 */
+<span class="fc" id="L58">	private static final Range&lt;Integer&gt; PORT_RANGE = Range.between(8000, 9000);</span>
+
+	/**
+	 * Reference to maven project
+	 */
+	@Parameter(defaultValue = &quot;${project}&quot;, readonly = true)
+	private MavenProject project;
+
+	/**
+	 * Reference to the current maven session
+	 */
+	@Parameter(defaultValue = &quot;${plugin}&quot;, readonly = true)
+	private PluginDescriptor plugin;
+
+	@Parameter(defaultValue = &quot;${plugin.artifacts}&quot;, readonly = true)
+	private Collection&lt;Artifact&gt; pluginClasspath;
+
+	/**
+	 * Reference to the current maven session
+	 */
+	@Parameter(defaultValue = &quot;${session}&quot;, readonly = true)
+	private MavenSession mavenSession;
+
+	/**
+	 * FitNesse port to start in WEB mode. Defaults to 8000
+	 */
+	@Parameter(property = &quot;fitnesse.port&quot;)
+	private Integer port;
+
+	/**
+	 * The directory in which FitNesse expects to find its page root.
+	 */
+	@Parameter(property = &quot;fitnesse.rootPath&quot;)
+	private String rootPath;
+
+	/**
+	 * The directory in which FitNesse looks for top level pages.
+	 */
+	@Parameter(property = &quot;fitnesse.fitNesseRoot&quot;, defaultValue = &quot;FitNesseRoot&quot;)
+	private String fitNesseRoot;
+
+	/**
+	 * Allows setting a custom contextRoot to the application: http://[host][contextRoot]
+	 */
+	@Parameter(property = &quot;fitnesse.contextRoot&quot;)
+	private String contextRoot;
+
+	/**
+	 * Creates a variable to be used by fitnesse containing the classpath available along the run command.
+	 */
+	@Parameter(property = &quot;fitnesse.classpath.variable&quot;, defaultValue = &quot;FITNESSE_CLASSPATH&quot;)
+	private String fitnesseClasspathVariable;
+
+	/**
+	 * If informed, will run the command and then exit, useful to run tests and then exit. For example: &lt;b&gt;mvn fitnesserunner:run -Dfitnesse.command=SuiteToRun?suite&amp;format=text&lt;/b&gt;
+	 * &lt;br/&gt;
+	 * Check &lt;a href=&quot;http://www.fitnesse.org/FitNesse.FullReferenceGuide.UserGuide.AdministeringFitNesse.RestfulServices&quot;&gt;here&lt;/a&gt; for all available options.
+	 * Note that only &lt;b&gt;resource?responder&amp;inputs&lt;/b&gt; part of the URL needs be informed
+	 */
+	@Parameter(property = &quot;fitnesse.command&quot;)
+	private String command;
+
+	/**
+	 * Redirect command output. This is most useful in conjunction with the {@link #command} option
+	 */
+	@Parameter(property = &quot;fitnesse.redirectOutput&quot;)
+	private String redirectOutput;
+
+	/**
+	 * Indicates if the project dependencies should be used when executing the main class.
+	 */
+	@Parameter(property = &quot;fitnesse.includeProjectDependencies&quot;, defaultValue = &quot;false&quot;)
+	private boolean includeProjectDependencies;
+
+	/**
+	 * Allows setting a custom theme
+	 */
+	@Parameter(property = &quot;fitnesse.theme&quot;)
+	private String theme;
+
+	@Override
+	public void execute() throws MojoExecutionException, MojoFailureException {
+<span class="fc" id="L140">		Collection&lt;String&gt; classpath = determineClasspath();</span>
+<span class="fc" id="L141">		execute(configuration(classpath), classpath);</span>
+<span class="fc" id="L142">	}</span>
+
+	private ContextConfigurator configuration(Collection&lt;String&gt; classpath) {
+<span class="fc" id="L145">		ContextConfigurator config = ContextConfigurator.systemDefaults();</span>
+<span class="fc" id="L146">		withParameter(config, ConfigurationParameter.ROOT_PATH, determineRootPath());</span>
+<span class="fc" id="L147">		withParameter(config, ConfigurationParameter.ROOT_DIRECTORY, this.fitNesseRoot);</span>
+<span class="fc" id="L148">		withParameter(config, ConfigurationParameter.CONTEXT_ROOT, this.contextRoot);</span>
+<span class="fc" id="L149">		withParameter(config, ConfigurationParameter.COMMAND, this.command);</span>
+<span class="fc" id="L150">		withParameter(config, ConfigurationParameter.OUTPUT, this.redirectOutput);</span>
+<span class="fc" id="L151">		withParameter(config, ConfigurationParameter.PORT, determinePort());</span>
+<span class="fc" id="L152">		withParameter(config, this.fitnesseClasspathVariable, StringUtils.join(classpath, SystemUtils.PATH_SEPARATOR));</span>
+<span class="fc" id="L153">		withParameter(config, &quot;Theme&quot;, this.theme);</span>
+<span class="fc" id="L154">		exposeMavenProperties(config);</span>
+		// TODO: still not compatible with fitnesse updates nor install only
+<span class="fc" id="L156">		withParameter(config, ConfigurationParameter.OMITTING_UPDATES, true);</span>
+<span class="fc" id="L157">		return config;</span>
+	}
+
+	private void exposeMavenProperties(ContextConfigurator config) {
+<span class="pc" id="L161">		BiConsumer&lt;? super Object, ? super Object&gt; propertyCollector = (key, value) -&gt; withParameter(config, key, value);</span>
+<span class="fc" id="L162">		this.mavenSession.getCurrentProject().getProperties().forEach(propertyCollector);</span>
+<span class="pc" id="L163">		this.mavenSession.getUserProperties().forEach((key, value) -&gt; withParameter(config, key, value));</span>
+<span class="fc" id="L164">	}</span>
+
+	private void withParameter(ContextConfigurator config, Object key, Object value) {
+<span class="fc" id="L167">		String valueString = Objects.toString(value, null);</span>
+<span class="fc bfc" id="L168" title="All 2 branches covered.">		if (StringUtils.isBlank(valueString)) {</span>
+<span class="fc" id="L169">			return;</span>
+		}
+<span class="fc bfc" id="L171" title="All 2 branches covered.">		if (key instanceof ConfigurationParameter) {</span>
+<span class="fc" id="L172">			config.withParameter((ConfigurationParameter) key, valueString);</span>
+		} else {
+<span class="fc" id="L174">			config.withParameter(Objects.toString(key), valueString);</span>
+		}
+<span class="fc" id="L176">		getLog().debug(String.format(&quot;%s: %s&quot;, key, valueString));</span>
+<span class="fc" id="L177">	}</span>
+
+	private String determineRootPath() {
+<span class="pc bpc" id="L180" title="1 of 2 branches missed.">		if (StringUtils.isNotBlank(this.rootPath)) {</span>
+<span class="nc" id="L181">			return Paths.get(this.rootPath).normalize().toString();</span>
+		}
+<span class="fc" id="L183">		Path basedir = this.project.getBasedir().toPath();</span>
+		try {
+<span class="pc bpc" id="L185" title="1 of 4 branches missed.">			Stream&lt;Path&gt; fitNesseRootSearcher = Files.walk(basedir).filter(t -&gt; t.toFile().isDirectory() &amp;&amp; t.endsWith(FitnesseRunnerMojo.this.fitNesseRoot));</span>
+<span class="fc" id="L186">			return fitNesseRootSearcher.findFirst().get().getParent().toString();</span>
+<span class="nc" id="L187">		} catch (NoSuchElementException | IOException e) {</span>
+<span class="nc" id="L188">			getLog().debug(&quot;Failed to find a valid FitNesseRoot directory under: &quot; + basedir, e);</span>
+		}
+<span class="nc" id="L190">		return null;</span>
+	}
+
+	private int determinePort() {
+<span class="fc" id="L194">		return ObjectUtils.defaultIfNull(this.port, determinePort(FitnesseRunnerMojo.PORT_RANGE.getMinimum()));</span>
+	}
+
+	private int determinePort(Integer port) {
+<span class="pc bpc" id="L198" title="1 of 2 branches missed.">		if (!FitnesseRunnerMojo.PORT_RANGE.contains(port)) {</span>
+<span class="nc" id="L199">			throw new IllegalStateException(&quot;Unable to find an available port to run FitNesse within the range: &quot; + FitnesseRunnerMojo.PORT_RANGE);</span>
+		}
+<span class="pc" id="L201">		try (ServerSocket socket = new ServerSocket(port)) {</span>
+<span class="fc" id="L202">			return port;</span>
+<span class="pc bpc" id="L203" title="6 of 8 branches missed.">		} catch (IOException e) {</span>
+<span class="nc" id="L204">			return determinePort(port + NumberUtils.INTEGER_ONE);</span>
+		}
+	}
+
+	private Collection&lt;String&gt; determineClasspath() {
+<span class="fc" id="L209">		Map&lt;String, Pair&lt;ArtifactVersion, String&gt;&gt; classpathMap = new HashMap&lt;&gt;();</span>
+<span class="fc" id="L210">		collectFileFromArtifacts(classpathMap, this.pluginClasspath);</span>
+<span class="fc" id="L211">		Collection&lt;String&gt; classpath = new ArrayList&lt;&gt;();</span>
+<span class="pc bpc" id="L212" title="1 of 2 branches missed.">		if (this.includeProjectDependencies) {</span>
+<span class="nc" id="L213">			collectFileFromArtifacts(classpathMap, this.project.getArtifacts());</span>
+<span class="nc" id="L214">			classpath.add(this.project.getBuild().getOutputDirectory() + File.separator);</span>
+<span class="nc" id="L215">			classpath.add(this.project.getBuild().getTestOutputDirectory() + File.separator);</span>
+		}
+<span class="fc" id="L217">		classpath.addAll(classpathMap.values().stream().map(versionAndFile -&gt; versionAndFile.getValue()).collect(Collectors.toList()));</span>
+<span class="fc" id="L218">		return classpath;</span>
+	}
+
+	private void collectFileFromArtifacts(Map&lt;String, Pair&lt;ArtifactVersion, String&gt;&gt; artifactMap, Collection&lt;Artifact&gt; artifacts) {
+<span class="fc" id="L222">		artifacts.stream().forEach(artifact -&gt; {</span>
+<span class="fc" id="L223">			String artifactKey = String.format(&quot;%s%s&quot;, artifact.getGroupId(), artifact.getArtifactId());</span>
+<span class="fc" id="L224">			Pair&lt;ArtifactVersion, String&gt; entry = artifactMap.get(artifactKey);</span>
+			try {
+<span class="pc bpc" id="L226" title="3 of 4 branches missed.">				if (entry == null || entry.getKey().compareTo(artifact.getSelectedVersion()) &lt; NumberUtils.INTEGER_ZERO) {</span>
+<span class="fc" id="L227">					artifactMap.put(artifactKey, Pair.of(artifact.getSelectedVersion(), artifact.getFile().getAbsolutePath()));</span>
+				}
+<span class="nc" id="L229">			} catch (OverConstrainedVersionException e) {</span>
+<span class="nc" id="L230">				getLog().warn(&quot;Failed to compare artifact versions: &quot; + artifact, e);</span>
+<span class="fc" id="L231">			}</span>
+<span class="fc" id="L232">		});</span>
+<span class="fc" id="L233">	}</span>
+
+	private void execute(ContextConfigurator config, Collection&lt;String&gt; classpath) throws MojoExecutionException {
+<span class="fc" id="L236">		Integer result = null;</span>
+		try {
+<span class="fc" id="L238">			Collection&lt;Thread&gt; previousThreadsSnapshot = new HashSet&lt;&gt;(Thread.getAllStackTraces().keySet());</span>
+<span class="fc" id="L239">			URL[] classpathUrl = new URL[classpath.size()];</span>
+<span class="fc" id="L240">			int i = 0;</span>
+<span class="fc bfc" id="L241" title="All 2 branches covered.">			for (String entry : classpath) {</span>
+<span class="fc" id="L242">				classpathUrl[i++] = new File(entry).toURI().toURL();</span>
+<span class="fc" id="L243">			}</span>
+<span class="fc" id="L244">			Thread.currentThread().setContextClassLoader(new URLClassLoader(classpathUrl, getClass().getClassLoader()));</span>
+<span class="fc" id="L245">			result = new FitNesseMain().launchFitNesse(config);</span>
+			// no result means web execution mode
+<span class="pc bpc" id="L247" title="1 of 2 branches missed.">			if (result == null) {</span>
+<span class="nc bnc" id="L248" title="All 2 branches missed.">				Thread.getAllStackTraces().keySet().stream().filter(thread -&gt; !previousThreadsSnapshot.contains(thread)).findFirst().get().join();</span>
+<span class="nc" id="L249">				return;</span>
+			}
+<span class="nc" id="L251">		} catch (Exception e) {</span>
+<span class="nc" id="L252">			throw new MojoExecutionException(e.getMessage(), ExceptionUtils.getRootCause(e));</span>
+<span class="fc" id="L253">		}</span>
+<span class="pc bpc" id="L254" title="1 of 2 branches missed.">		if (result &gt; NumberUtils.INTEGER_ZERO) {</span>
+<span class="nc" id="L255">			throw new MojoExecutionException(result + &quot; FitNesse tests failed to execute&quot;);</span>
+		}
+<span class="fc" id="L257">	}</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.eclemma.org/jacoco">JaCoCo</a> 0.7.5.201505241946</span></div></body></html>
